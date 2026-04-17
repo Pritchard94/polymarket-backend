@@ -18,7 +18,7 @@ const { sendDiscordWebhook } = require('./discord');
 const app = express();
 
 // ─── Database Configuration ───────────────────────────────────────────────────
-const dbUrl = process.env.DATABASE_URL;
+const dbUrl = process.env.DATABASE_URL?.trim();
 if (!dbUrl) {
   console.warn('[DB] ⚠️  DATABASE_URL is missing! Auth will fail locally.');
 }
