@@ -2,6 +2,14 @@
 // Express HTTP server + persistent Polymarket WebSocket monitor.
 // Designed to run 24/7 on Railway.
 
+// ─── Global crash protection (must be FIRST) ──────────────────────────────────
+process.on('uncaughtException', (err) => {
+  console.error('[PROCESS] ❌ Uncaught exception (recovered):', err.message);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[PROCESS] ❌ Unhandled rejection (recovered):', reason);
+});
+
 const express = require('express');
 const cors = require('cors');
 const { startMarketMonitor } = require('./marketMonitor');
@@ -10,17 +18,19 @@ const { sendDiscordWebhook } = require('./discord');
 const app = express();
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
+const allowedOrigin = process.env.FRONTEND_URL || '*';
 app.use(cors({
-  // In production, restrict to your Vercel frontend URL
-  origin: process.env.FRONTEND_URL || '*',
+  origin: allowedOrigin,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 }));
+// Handle preflight OPTIONS requests for all routes
+app.options('*', cors());
 app.use(express.json());
 
 // ─── In-Memory Store ──────────────────────────────────────────────────────────
-// NOTE: This resets on server restart. For persistence, add a Railway PostgreSQL
-// or MongoDB addon and replace these maps with database queries.
-const users = new Map();     // username -> { username, hashedPassword, discordWebhook }
-const recentMarkets = [];    // last 100 detected markets
+const users = new Map();
+const recentMarkets = [];
 
 // ─── Auth Routes ──────────────────────────────────────────────────────────────
 
@@ -47,7 +57,6 @@ app.post('/api/login', (req, res) => {
     return res.status(401).json({ error: 'Invalid username or password' });
   }
 
-  // Return safe user data (never return raw password in production — use JWT)
   res.json({
     success: true,
     user: { username: user.username, discordWebhook: user.discordWebhook },
@@ -60,7 +69,7 @@ app.get('/api/markets', (_req, res) => {
   res.json({ markets: recentMarkets.slice(0, 50) });
 });
 
-// ─── Health Check (Railway uses this to confirm the service is alive) ─────────
+// ─── Health Check ─────────────────────────────────────────────────────────────
 
 app.get('/health', (_req, res) => {
   res.json({
@@ -74,15 +83,14 @@ app.get('/health', (_req, res) => {
 // ─── Start Server ─────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`[SERVER] 🚀 PolyNexus backend listening on port ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`[SERVER] 🚀 PolyNexus backend listening on 0.0.0.0:${PORT}`);
+  console.log(`[SERVER] CORS allowed origin: ${allowedOrigin}`);
 
   startMarketMonitor((newMarket) => {
-    // Store recent market
     recentMarkets.unshift(newMarket);
     if (recentMarkets.length > 100) recentMarkets.pop();
 
-    // Notify every registered user via their Discord webhook
     const allUsers = [...users.values()];
     console.log(`[NOTIFY] 📣 Alerting ${allUsers.length} user(s) about: "${newMarket.title}"`);
 

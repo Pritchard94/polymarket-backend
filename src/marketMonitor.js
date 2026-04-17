@@ -169,14 +169,6 @@ function connectWebSocket(tokenIds) {
 async function startMarketMonitor(callback) {
   onNewMarket = callback;
 
-  // Global safety net — prevent ANY uncaught error from killing the process
-  process.on('uncaughtException', (err) => {
-    console.error('[PROCESS] ❌ Uncaught exception (recovered):', err.message);
-  });
-  process.on('unhandledRejection', (reason) => {
-    console.error('[PROCESS] ❌ Unhandled rejection (recovered):', reason);
-  });
-
   console.log('[MONITOR] 🚀 Starting Polymarket monitor...');
 
   const initialMarkets = await fetchInitialMarkets();
