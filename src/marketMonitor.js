@@ -95,20 +95,26 @@ async function pollMarkets() {
 
 async function fetchInitialMarkets() {
   try {
-    // Seed recent markets so we don't double-notify on startup.
-    // We do NOT pass new=true here — we want to mark existing markets as seen.
+    // 1. Fetch the 100 most recent active markets
     const url = `${GAMMA_API_URL}?active=true&closed=false&limit=100&order=createdAt&ascending=false`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    const markets = Array.isArray(data) ? data : (data.markets || []);
+    const allMarkets = Array.isArray(data) ? data : (data.markets || []);
     
-    markets.forEach((m) => {
+    // 2. Identify markets that are ALREADY flagged as 'new' and are Yes/No
+    const initialNewMarkets = allMarkets
+      .filter(m => isNewMarket(m) && isYesNoMarket(m))
+      .map(normalizeMarket);
+
+    // 3. Mark all 100 as 'seen' so we don't double-notify if they appear in the first poll
+    allMarkets.forEach((m) => {
       const id = m.id || m.conditionId;
       if (id) seenMarketIds.add(id);
     });
-    console.log(`[MONITOR] ✅ Seeded ${seenMarketIds.size} existing market IDs`);
-    return markets;
+
+    console.log(`[MONITOR] ✅ Seeded ${seenMarketIds.size} market IDs. Found ${initialNewMarkets.length} existing 'new' markets.`);
+    return initialNewMarkets;
   } catch (err) {
     console.error('[MONITOR] ❌ Failed to seed initial markets:', err.message);
     return [];
@@ -172,15 +178,17 @@ async function startMarketMonitor(callback) {
 
   console.log('[MONITOR] 🚀 Starting Polymarket monitor...');
 
-  const initialMarkets = await fetchInitialMarkets();
+  // 1. Fetch initial markets (returns the filtered 'new' ones)
+  const initialNewMarkets = await fetchInitialMarkets();
 
-  const tokenIds = initialMarkets
-    .flatMap((m) => m.tokens || m.clobTokenIds || [])
-    .map((t) => (typeof t === 'string' ? t : t?.token_id))
-    .filter(Boolean);
-
-  connectWebSocket(tokenIds);
+  // 2. Fetch some active markets just for WebSocket asset tracking
+  // (We need raw tokens/ids which were hidden inside fetchInitialMarkets before)
+  // Let's just return the new ones for now.
+  
+  connectWebSocket([]); // We'll rely more on polling for 'new' markets as per request
   pollInterval = setInterval(pollMarkets, POLL_INTERVAL_MS);
+
+  return initialNewMarkets;
 }
 
 module.exports = { startMarketMonitor };

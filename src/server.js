@@ -97,11 +97,11 @@ app.get('/health', (_req, res) => {
 // ─── Start Server ─────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, '0.0.0.0', async () => {
   console.log(`[SERVER] 🚀 PolyNexus backend listening on 0.0.0.0:${PORT}`);
   console.log(`[SERVER] Primary CORS allowed origin: ${allowedOrigins[0]}`);
 
-  startMarketMonitor((newMarket) => {
+  const initialMarkets = await startMarketMonitor((newMarket) => {
     recentMarkets.unshift(newMarket);
     if (recentMarkets.length > 100) recentMarkets.pop();
 
@@ -114,4 +114,9 @@ app.listen(PORT, '0.0.0.0', () => {
       }
     });
   });
+
+  if (initialMarkets && initialMarkets.length > 0) {
+    console.log(`[SERVER] 📥 Populating ${initialMarkets.length} initial 'new' markets.`);
+    recentMarkets.push(...initialMarkets);
+  }
 });
