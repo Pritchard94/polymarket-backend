@@ -44,11 +44,6 @@ function isYesNoMarket(market) {
   return lower.includes('yes') && lower.includes('no');
 }
 
-/** Use the official Gamma API `new` flag as the primary filter. */
-function isNewMarket(market) {
-  return market.new === true;
-}
-
 function normalizeMarket(market) {
   return {
     id: market.id || market.conditionId,
@@ -63,12 +58,11 @@ function processMarket(raw) {
   try {
     const id = raw.id || raw.conditionId;
     if (!id || seenMarketIds.has(id)) return; // In-session dedup guard
-    if (!isNewMarket(raw)) return;             // Must be flagged new by Gamma API
     if (!isYesNoMarket(raw)) return;           // Must have Yes/No outcomes
 
     seenMarketIds.add(id);
     const market = normalizeMarket(raw);
-    console.log(`[MONITOR] 🆕 NEW MARKET (new=true, Yes/No): ${market.title}`);
+    console.log(`[MONITOR] 🆕 NEW SIGNAL DETECTED: ${market.title}`);
     if (onNewMarket) onNewMarket(market);
   } catch (err) {
     console.error('[MONITOR] ❌ Error processing market:', err.message);
@@ -79,17 +73,16 @@ function processMarket(raw) {
 
 async function pollMarkets() {
   try {
-    // Query the Gamma API specifically for markets flagged as new=true
-    const url = `${GAMMA_API_URL}?active=true&closed=false&new=true&limit=20&order=createdAt&ascending=false`;
+    // Query the Gamma API for all active markets, ordered by creation date
+    const url = `${GAMMA_API_URL}?active=true&closed=false&limit=30&order=createdAt&ascending=false`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const markets = Array.isArray(data) ? data : (data.markets || []);
-    console.log(`[MONITOR] ♻️  Poll complete — ${markets.length} new market(s) found`);
+    console.log(`[MONITOR] ♻️  Poll complete — checking ${markets.length} recent markets`);
     markets.forEach(processMarket);
   } catch (err) {
     console.error('[MONITOR] ❌ Poll failed:', err.message);
-    // Do NOT rethrow — keep the server alive
   }
 }
 
@@ -100,20 +93,19 @@ async function fetchInitialMarkets() {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    const allMarkets = Array.isArray(data) ? data : (data.markets || []);
-    
-    // 2. Identify markets that are ALREADY flagged as 'new' and are Yes/No
+    // 2. Identify markets that are Yes/No and NOT in our initial seed
     const initialNewMarkets = allMarkets
-      .filter(m => isNewMarket(m) && isYesNoMarket(m))
-      .map(normalizeMarket);
+      .filter(m => isYesNoMarket(m))
+      .map(normalizeMarket)
+      .slice(0, 20); // Just take the top 20 most recent for the initial feed
 
-    // 3. Mark all 100 as 'seen' so we don't double-notify if they appear in the first poll
+    // 3. Mark all 100 as 'seen'
     allMarkets.forEach((m) => {
       const id = m.id || m.conditionId;
       if (id) seenMarketIds.add(id);
     });
 
-    console.log(`[MONITOR] ✅ Seeded ${seenMarketIds.size} market IDs. Found ${initialNewMarkets.length} existing 'new' markets.`);
+    console.log(`[MONITOR] ✅ Seeded ${seenMarketIds.size} market IDs. Displaying top ${initialNewMarkets.length} in feed.`);
     return initialNewMarkets;
   } catch (err) {
     console.error('[MONITOR] ❌ Failed to seed initial markets:', err.message);
