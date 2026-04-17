@@ -25,13 +25,18 @@ if (!dbUrl) {
 
 const pool = new Pool({
   connectionString: dbUrl,
-  ssl: (dbUrl && !dbUrl.includes('localhost')) ? { rejectUnauthorized: false } : false
+  // Automatically handle SSL based on whether we are connecting to a local or remote DB
+  ssl: (dbUrl && !dbUrl.includes('localhost') && !dbUrl.includes('railway.internal')) 
+    ? { rejectUnauthorized: false } 
+    : false
 });
 
 async function initDb() {
   try {
-    // Create Users table
-    await pool.query(`
+    const client = await pool.connect();
+    console.log('[DB] ✅ Connected to PostgreSQL');
+    
+    await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY,
         password TEXT NOT NULL,
@@ -39,9 +44,10 @@ async function initDb() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    console.log('[DB] ✅ Users table initialized');
+    client.release();
+    console.log('[DB] ✅ Users table ready');
   } catch (err) {
-    console.error('[DB] ❌ Initialization failed:', err.message);
+    console.error('[DB] ❌ Database connection/init failed:', err.message);
   }
 }
 
