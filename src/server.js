@@ -1,8 +1,8 @@
 // server.js — PolyNexus Backend
 // Express HTTP server + persistent Polymarket WebSocket monitor.
-// Designed to run 24/7 on Railway.
+// Designed to run 24/7 on Railway with PostgreSQL.
 
-// ─── Global crash protection (must be FIRST) ──────────────────────────────────
+// ─── Global crash protection ──────────────────────────────────────────────────
 process.on('uncaughtException', (err) => {
   console.error('[PROCESS] ❌ Uncaught exception (recovered):', err.message);
 });
@@ -12,10 +12,35 @@ process.on('unhandledRejection', (reason) => {
 
 const express = require('express');
 const cors = require('cors');
+const { Pool } = require('pg');
 const { startMarketMonitor } = require('./marketMonitor');
 const { sendDiscordWebhook } = require('./discord');
 
 const app = express();
+
+// ─── Database Configuration ───────────────────────────────────────────────────
+// Railway automatically provides DATABASE_URL
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes('localhost') ? false : { rejectUnauthorized: false }
+});
+
+async function initDb() {
+  try {
+    // Create Users table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        username TEXT PRIMARY KEY,
+        password TEXT NOT NULL,
+        discord_webhook TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    console.log('[DB] ✅ Users table initialized');
+  } catch (err) {
+    console.error('[DB] ❌ Initialization failed:', err.message);
+  }
+}
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 const allowedOrigins = [
@@ -27,7 +52,6 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl)
     if (!origin) return callback(null, true);
     if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
       callback(null, true);
@@ -38,51 +62,68 @@ app.use(cors({
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
-// Handle preflight OPTIONS requests for all routes
 app.options('*', cors());
 app.use(express.json());
 
-// ─── In-Memory Store ──────────────────────────────────────────────────────────
-const users = new Map();
+// ─── Shared State ─────────────────────────────────────────────────────────────
 const recentMarkets = [];
 
 // ─── Auth Routes ──────────────────────────────────────────────────────────────
 
-app.post('/api/register', (req, res) => {
+app.post('/api/register', async (req, res) => {
   const { username, password, discordWebhook } = req.body;
 
   if (!username || !password || !discordWebhook) {
     return res.status(400).json({ error: 'username, password and discordWebhook are required' });
   }
-  if (users.has(username)) {
-    return res.status(409).json({ error: 'Username already taken' });
+
+  try {
+    // Check if user exists
+    const check = await pool.query('SELECT username FROM users WHERE username = $1', [username]);
+    if (check.rows.length > 0) {
+      return res.status(409).json({ error: 'Username already taken' });
+    }
+
+    // Insert user
+    await pool.query(
+      'INSERT INTO users (username, password, discord_webhook) VALUES ($1, $2, $3)',
+      [username, password, discordWebhook]
+    );
+
+    console.log(`[AUTH] ✅ New user registered: ${username}`);
+    
+    sendDiscordWebhook(discordWebhook, {
+      title: '🚀 PolyNexus Connection Established!',
+      slug: 'nexus-welcome',
+      createdAt: new Date().toISOString()
+    });
+
+    res.status(201).json({ success: true, message: 'Registration successful' });
+  } catch (err) {
+    console.error('[AUTH] ❌ Registration error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
   }
-
-  users.set(username, { username, password, discordWebhook });
-  console.log(`[AUTH] ✅ New user registered: ${username} (Total users: ${users.size})`);
-  
-  // Send a welcome test message to Discord immediately
-  sendDiscordWebhook(discordWebhook, {
-    title: '🚀 PolyNexus Connection Established!',
-    slug: 'nexus-welcome',
-    createdAt: new Date().toISOString()
-  });
-
-  res.status(201).json({ success: true, message: 'Registration successful' });
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
-  const user = users.get(username);
 
-  if (!user || user.password !== password) {
-    return res.status(401).json({ error: 'Invalid username or password' });
+  try {
+    const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+    const user = result.rows[0];
+
+    if (!user || user.password !== password) {
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+
+    res.json({
+      success: true,
+      user: { username: user.username, discordWebhook: user.discord_webhook },
+    });
+  } catch (err) {
+    console.error('[AUTH] ❌ Login error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
   }
-
-  res.json({
-    success: true,
-    user: { username: user.username, discordWebhook: user.discordWebhook },
-  });
 });
 
 // ─── Market Routes ────────────────────────────────────────────────────────────
@@ -93,13 +134,19 @@ app.get('/api/markets', (_req, res) => {
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
 
-app.get('/health', (_req, res) => {
-  res.json({
-    status: 'alive',
-    usersRegistered: users.size,
-    marketsTracked: recentMarkets.length,
-    uptime: Math.round(process.uptime()) + 's',
-  });
+app.get('/health', async (_req, res) => {
+  try {
+    const userCount = await pool.query('SELECT COUNT(*) FROM users');
+    res.json({
+      status: 'alive',
+      db: 'connected',
+      usersRegistered: parseInt(userCount.rows[0].count),
+      marketsTracked: recentMarkets.length,
+      uptime: Math.round(process.uptime()) + 's',
+    });
+  } catch (err) {
+    res.status(500).json({ status: 'error', db: 'disconnected', message: err.message });
+  }
 });
 
 // ─── Start Server ─────────────────────────────────────────────────────────────
@@ -107,24 +154,25 @@ app.get('/health', (_req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`[SERVER] 🚀 PolyNexus backend listening on 0.0.0.0:${PORT}`);
-  console.log(`[SERVER] Primary CORS allowed origin: ${allowedOrigins[0]}`);
+  
+  await initDb();
 
-  const initialMarkets = await startMarketMonitor((newMarket) => {
+  const initialMarkets = await startMarketMonitor(async (newMarket) => {
     recentMarkets.unshift(newMarket);
     if (recentMarkets.length > 100) recentMarkets.pop();
 
-    const allUsers = [...users.values()];
-    console.log(`[NOTIFY] 📣 Alerting ${allUsers.length} user(s) about: "${newMarket.title}"`);
-
-    allUsers.forEach((user) => {
-      if (user.discordWebhook) {
-        sendDiscordWebhook(user.discordWebhook, newMarket);
-      }
-    });
+    try {
+      const result = await pool.query('SELECT discord_webhook FROM users');
+      const webhooks = result.rows.map(r => r.discord_webhook);
+      
+      console.log(`[NOTIFY] 📣 Alerting ${webhooks.length} user(s) about: "${newMarket.title}"`);
+      webhooks.forEach(url => sendDiscordWebhook(url, newMarket));
+    } catch (err) {
+      console.error('[NOTIFY] ❌ Database query failed during notification:', err.message);
+    }
   });
 
   if (initialMarkets && initialMarkets.length > 0) {
-    console.log(`[SERVER] 📥 Populating ${initialMarkets.length} initial 'new' markets.`);
     recentMarkets.push(...initialMarkets);
   }
 });
