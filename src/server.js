@@ -59,7 +59,15 @@ app.post('/api/register', (req, res) => {
   }
 
   users.set(username, { username, password, discordWebhook });
-  console.log(`[AUTH] ✅ New user registered: ${username}`);
+  console.log(`[AUTH] ✅ New user registered: ${username} (Total users: ${users.size})`);
+  
+  // Send a welcome test message to Discord immediately
+  sendDiscordWebhook(discordWebhook, {
+    title: '🚀 PolyNexus Connection Established!',
+    slug: 'nexus-welcome',
+    createdAt: new Date().toISOString()
+  });
+
   res.status(201).json({ success: true, message: 'Registration successful' });
 });
 
