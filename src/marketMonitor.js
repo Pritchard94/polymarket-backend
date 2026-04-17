@@ -102,6 +102,7 @@ async function fetchInitialMarkets() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const markets = Array.isArray(data) ? data : (data.markets || []);
+    
     markets.forEach((m) => {
       const id = m.id || m.conditionId;
       if (id) seenMarketIds.add(id);

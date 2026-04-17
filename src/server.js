@@ -18,7 +18,7 @@ const { sendDiscordWebhook } = require('./discord');
 const app = express();
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
-const allowedOrigin = (process.env.FRONTEND_URL || '*').replace(/\/$/, '');
+const allowedOrigin = (process.env.FRONTEND_URL || 'http://localhost:3001' || '*').replace(/\/$/, '');
 app.use(cors({
   origin: allowedOrigin,
   methods: ['GET', 'POST', 'OPTIONS'],
