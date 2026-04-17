@@ -45,10 +45,13 @@ function isYesNoMarket(market) {
 }
 
 function normalizeMarket(market) {
+  // Prefer the slug from the events array if available, as it's more reliable for /event/ links
+  const eventSlug = market.events && market.events.length > 0 ? market.events[0].slug : null;
+  
   return {
     id: market.id || market.conditionId,
     title: market.question || market.title || 'Untitled Market',
-    slug: market.slug || market.marketSlug || market.id || 'unknown',
+    slug: eventSlug || market.slug || market.marketSlug || market.id || 'unknown',
     createdAt: market.createdAt || new Date().toISOString(),
     outcomes: parseOutcomes(market.outcomes),
   };
