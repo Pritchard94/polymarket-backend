@@ -18,9 +18,23 @@ const { sendDiscordWebhook } = require('./discord');
 const app = express();
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
-const allowedOrigin = (process.env.FRONTEND_URL || 'http://localhost:3001' || '*').replace(/\/$/, '');
+const allowedOrigins = [
+  (process.env.FRONTEND_URL || '').replace(/\/$/, ''),
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://localhost:3001'
+].filter(Boolean);
+
 app.use(cors({
-  origin: allowedOrigin,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
