@@ -99,7 +99,7 @@ app.get('/health', (_req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[SERVER] 🚀 PolyNexus backend listening on 0.0.0.0:${PORT}`);
-  console.log(`[SERVER] CORS allowed origin: ${allowedOrigin}`);
+  console.log(`[SERVER] Primary CORS allowed origin: ${allowedOrigins[0]}`);
 
   startMarketMonitor((newMarket) => {
     recentMarkets.unshift(newMarket);
