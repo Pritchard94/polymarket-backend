@@ -44,6 +44,11 @@ function isYesNoMarket(market) {
   return lower.includes('yes') && lower.includes('no');
 }
 
+/** Use the official Gamma API `new` flag as the primary filter. */
+function isNewMarket(market) {
+  return market.new === true;
+}
+
 function normalizeMarket(market) {
   return {
     id: market.id || market.conditionId,
@@ -57,12 +62,13 @@ function normalizeMarket(market) {
 function processMarket(raw) {
   try {
     const id = raw.id || raw.conditionId;
-    if (!id || seenMarketIds.has(id)) return;
-    if (!isYesNoMarket(raw)) return;
+    if (!id || seenMarketIds.has(id)) return; // In-session dedup guard
+    if (!isNewMarket(raw)) return;             // Must be flagged new by Gamma API
+    if (!isYesNoMarket(raw)) return;           // Must have Yes/No outcomes
 
     seenMarketIds.add(id);
     const market = normalizeMarket(raw);
-    console.log(`[MONITOR] 🆕 NEW MARKET: ${market.title}`);
+    console.log(`[MONITOR] 🆕 NEW MARKET (new=true, Yes/No): ${market.title}`);
     if (onNewMarket) onNewMarket(market);
   } catch (err) {
     console.error('[MONITOR] ❌ Error processing market:', err.message);
@@ -73,13 +79,14 @@ function processMarket(raw) {
 
 async function pollMarkets() {
   try {
-    const url = `${GAMMA_API_URL}?active=true&closed=false&limit=20&order=createdAt&ascending=false`;
+    // Query the Gamma API specifically for markets flagged as new=true
+    const url = `${GAMMA_API_URL}?active=true&closed=false&new=true&limit=20&order=createdAt&ascending=false`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const markets = Array.isArray(data) ? data : (data.markets || []);
+    console.log(`[MONITOR] ♻️  Poll complete — ${markets.length} new market(s) found`);
     markets.forEach(processMarket);
-    console.log(`[MONITOR] ♻️  Polled REST API — tracking ${seenMarketIds.size} markets`);
   } catch (err) {
     console.error('[MONITOR] ❌ Poll failed:', err.message);
     // Do NOT rethrow — keep the server alive
@@ -88,6 +95,8 @@ async function pollMarkets() {
 
 async function fetchInitialMarkets() {
   try {
+    // Seed recent markets so we don't double-notify on startup.
+    // We do NOT pass new=true here — we want to mark existing markets as seen.
     const url = `${GAMMA_API_URL}?active=true&closed=false&limit=100&order=createdAt&ascending=false`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -97,7 +106,7 @@ async function fetchInitialMarkets() {
       const id = m.id || m.conditionId;
       if (id) seenMarketIds.add(id);
     });
-    console.log(`[MONITOR] ✅ Seeded ${seenMarketIds.size} existing markets`);
+    console.log(`[MONITOR] ✅ Seeded ${seenMarketIds.size} existing market IDs`);
     return markets;
   } catch (err) {
     console.error('[MONITOR] ❌ Failed to seed initial markets:', err.message);
