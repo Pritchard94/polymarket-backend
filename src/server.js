@@ -1,6 +1,5 @@
 // server.js — PolyNexus Backend
-// Express HTTP server + persistent Polymarket WebSocket monitor.
-// Designed to run 24/7 on Railway with PostgreSQL.
+require('dotenv').config();
 
 // ─── Global crash protection ──────────────────────────────────────────────────
 process.on('uncaughtException', (err) => {
@@ -19,10 +18,14 @@ const { sendDiscordWebhook } = require('./discord');
 const app = express();
 
 // ─── Database Configuration ───────────────────────────────────────────────────
-// Railway automatically provides DATABASE_URL
+const dbUrl = process.env.DATABASE_URL;
+if (!dbUrl) {
+  console.warn('[DB] ⚠️  DATABASE_URL is missing! Auth will fail locally.');
+}
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL?.includes('localhost') ? false : { rejectUnauthorized: false }
+  connectionString: dbUrl,
+  ssl: (dbUrl && !dbUrl.includes('localhost')) ? { rejectUnauthorized: false } : false
 });
 
 async function initDb() {
