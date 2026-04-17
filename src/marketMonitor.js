@@ -15,9 +15,32 @@ let pollInterval = null;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * The Gamma API sometimes returns outcomes as:
+ *   - A real JS array: ["Yes", "No"]
+ *   - A JSON-encoded string: '["Yes","No"]'
+ *   - A comma-separated string: "Yes,No"
+ *   - null / undefined
+ * This function safely normalises all of those into a plain string array.
+ */
+function parseOutcomes(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.map(String);
+  if (typeof raw === 'string') {
+    // Try JSON parse first
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.map(String);
+    } catch (_) {}
+    // Fallback: comma-separated
+    return raw.split(',').map((s) => s.trim());
+  }
+  return [];
+}
+
 function isYesNoMarket(market) {
-  const outcomes = market.outcomes || [];
-  const lower = outcomes.map((o) => (typeof o === 'string' ? o.toLowerCase() : ''));
+  const outcomes = parseOutcomes(market.outcomes);
+  const lower = outcomes.map((o) => o.toLowerCase());
   return lower.includes('yes') && lower.includes('no');
 }
 
@@ -27,33 +50,39 @@ function normalizeMarket(market) {
     title: market.question || market.title || 'Untitled Market',
     slug: market.slug || market.marketSlug || market.id || 'unknown',
     createdAt: market.createdAt || new Date().toISOString(),
-    outcomes: market.outcomes || ['Yes', 'No'],
+    outcomes: parseOutcomes(market.outcomes),
   };
 }
 
 function processMarket(raw) {
-  const id = raw.id || raw.conditionId;
-  if (!id || seenMarketIds.has(id)) return;
-  if (!isYesNoMarket(raw)) return;
+  try {
+    const id = raw.id || raw.conditionId;
+    if (!id || seenMarketIds.has(id)) return;
+    if (!isYesNoMarket(raw)) return;
 
-  seenMarketIds.add(id);
-  const market = normalizeMarket(raw);
-  console.log(`[MONITOR] 🆕 NEW MARKET: ${market.title}`);
-  if (onNewMarket) onNewMarket(market);
+    seenMarketIds.add(id);
+    const market = normalizeMarket(raw);
+    console.log(`[MONITOR] 🆕 NEW MARKET: ${market.title}`);
+    if (onNewMarket) onNewMarket(market);
+  } catch (err) {
+    console.error('[MONITOR] ❌ Error processing market:', err.message);
+  }
 }
 
-// ─── REST Polling (Primary + Fallback) ────────────────────────────────────────
+// ─── REST Polling ─────────────────────────────────────────────────────────────
 
 async function pollMarkets() {
   try {
     const url = `${GAMMA_API_URL}?active=true&closed=false&limit=20&order=createdAt&ascending=false`;
     const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    const markets = Array.isArray(data) ? data : data.markets || [];
+    const markets = Array.isArray(data) ? data : (data.markets || []);
     markets.forEach(processMarket);
-    console.log(`[MONITOR] ♻️ Polled REST API — ${seenMarketIds.size} markets tracked`);
+    console.log(`[MONITOR] ♻️  Polled REST API — tracking ${seenMarketIds.size} markets`);
   } catch (err) {
     console.error('[MONITOR] ❌ Poll failed:', err.message);
+    // Do NOT rethrow — keep the server alive
   }
 }
 
@@ -61,24 +90,31 @@ async function fetchInitialMarkets() {
   try {
     const url = `${GAMMA_API_URL}?active=true&closed=false&limit=100&order=createdAt&ascending=false`;
     const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    const markets = Array.isArray(data) ? data : data.markets || [];
+    const markets = Array.isArray(data) ? data : (data.markets || []);
     markets.forEach((m) => {
       const id = m.id || m.conditionId;
       if (id) seenMarketIds.add(id);
     });
-    console.log(`[MONITOR] ✅ Seeded ${seenMarketIds.size} existing markets (won't re-alert)`);
+    console.log(`[MONITOR] ✅ Seeded ${seenMarketIds.size} existing markets`);
     return markets;
   } catch (err) {
-    console.error('[MONITOR] ❌ Failed to fetch initial markets:', err.message);
+    console.error('[MONITOR] ❌ Failed to seed initial markets:', err.message);
     return [];
   }
 }
 
-// ─── WebSocket (Real-time Layer) ──────────────────────────────────────────────
+// ─── WebSocket ────────────────────────────────────────────────────────────────
 
 function connectWebSocket(tokenIds) {
-  ws = new WebSocket(CLOB_WS_URL);
+  try {
+    ws = new WebSocket(CLOB_WS_URL);
+  } catch (err) {
+    console.error('[WS] ❌ Failed to create WebSocket:', err.message);
+    setTimeout(() => connectWebSocket(tokenIds), 10000);
+    return;
+  }
 
   ws.on('open', () => {
     console.log('[WS] ✅ Connected to Polymarket WebSocket');
@@ -114,28 +150,34 @@ function connectWebSocket(tokenIds) {
   });
 
   ws.on('error', (err) => {
+    // Log but don't crash — the 'close' event will trigger reconnect
     console.error('[WS] ❌ Error:', err.message);
   });
 }
 
-// ─── Public Entry Point ────────────────────────────────────────────────────────
+// ─── Entry Point ──────────────────────────────────────────────────────────────
 
 async function startMarketMonitor(callback) {
   onNewMarket = callback;
 
+  // Global safety net — prevent ANY uncaught error from killing the process
+  process.on('uncaughtException', (err) => {
+    console.error('[PROCESS] ❌ Uncaught exception (recovered):', err.message);
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.error('[PROCESS] ❌ Unhandled rejection (recovered):', reason);
+  });
+
   console.log('[MONITOR] 🚀 Starting Polymarket monitor...');
+
   const initialMarkets = await fetchInitialMarkets();
 
-  // Extract token IDs for WebSocket subscription
   const tokenIds = initialMarkets
     .flatMap((m) => m.tokens || m.clobTokenIds || [])
-    .map((t) => (typeof t === 'string' ? t : t.token_id))
+    .map((t) => (typeof t === 'string' ? t : t?.token_id))
     .filter(Boolean);
 
-  // Real-time WebSocket layer
   connectWebSocket(tokenIds);
-
-  // REST polling fallback (every 60s)
   pollInterval = setInterval(pollMarkets, POLL_INTERVAL_MS);
 }
 
